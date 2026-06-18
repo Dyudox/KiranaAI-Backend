@@ -32,6 +32,8 @@ export const getKiranaEmbedding = async (text) => {
     const output = await generateEmbedding(text, {
       pooling: "mean",
       normalize: true,
+      model: "qwen2.5:1.5b", // Pastikan nama model ini sama dengan yang Anda gunakan sebelumnya
+      prompt: text,
     });
 
     // Ubah format output object tensor menjadi array vanilla JavaScript angka biasa
@@ -40,6 +42,6 @@ export const getKiranaEmbedding = async (text) => {
   } catch (error) {
     console.error("Gagal membuat embedding lokal:", error);
     // Fallback jika ada kendala teknis (array 384 dimensi)
-    return Array.from({ length: 384 }, () => 0.0);
+    return Array.from({ length: 1536 }, () => 0.0);
   }
 };

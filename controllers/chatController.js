@@ -1,6 +1,7 @@
 // backend/controllers/chatController.js
 import pool from "../config/db.js";
-import { queryKnowledgeBase } from "../controllers/kbController.js";
+import { cosineSimilarity } from "../src/utils/vectorUtils.js";
+import { getKiranaEmbedding } from "../src/utils/kiranaAiService.js";
 import ollama from "ollama";
 
 // =========================================================================
@@ -36,6 +37,7 @@ const saveChatMessage = async (sessionId, sender, message, userId) => {
 // =========================================================================
 // CONTROLLER UTAMA
 // =========================================================================
+
 export const handleKiranaChat = async (req, res) => {
   try {
     const { message, sessionId, userId } = req.body;
@@ -74,24 +76,46 @@ export const handleKiranaChat = async (req, res) => {
       `✅ Berhasil menemukan ${contextChunks.length} potongan regulasi.`,
     );
 
-    const sourceList = [];
+    // =========================================================================
+    // 🌟 PERBAIKAN: EKSTRAKSI SEMUA SUMBER DOKUMEN (TERMASUK PDF Halaman)
+    // =========================================================================
+    const sourceMap = {};
 
-    for (const chunk of contextChunks.slice(0, 2)) {
+    for (const chunk of contextChunks) {
       const filename = chunk.filename || "Dokumen_Internal";
 
-      let sourceString = "";
-      if (chunk.row_number) {
-        sourceString = `${filename} (baris: ${chunk.row_number})`;
-      } else if (chunk.page_number) {
-        sourceString = `${filename} (hal: ${chunk.page_number})`;
-      } else {
-        sourceString = filename;
+      // Inisialisasi object untuk file baru
+      if (!sourceMap[filename]) {
+        sourceMap[filename] = {
+          pages: [],
+          rows: [],
+        };
       }
 
-      if (!sourceList.includes(sourceString)) {
-        sourceList.push(sourceString);
+      // Kelompokkan halaman (PDF) atau baris (Excel)
+      if (chunk.page_number) {
+        sourceMap[filename].pages.push(chunk.page_number);
+      } else if (chunk.row_number) {
+        sourceMap[filename].rows.push(chunk.row_number);
       }
     }
+
+    // Ubah data object di atas menjadi array string yang rapi
+    const sourceList = Object.keys(sourceMap).map((filename) => {
+      const data = sourceMap[filename];
+
+      // Ambil nilai unik dan urutkan dari angka terkecil ke terbesar
+      const uniquePages = [...new Set(data.pages)].sort((a, b) => a - b);
+      const uniqueRows = [...new Set(data.rows)].sort((a, b) => a - b);
+
+      if (uniquePages.length > 0) {
+        return `${filename} [hal: ${uniquePages.join(", ")}]`;
+      } else if (uniqueRows.length > 0) {
+        return `${filename} [baris: ${uniqueRows.join(", ")}]`;
+      } else {
+        return filename;
+      }
+    });
 
     const strictSystemInstruction = `
       Kamu adalah Kirana AI. Kamu adalah asisten informasi yang sangat rapi.
@@ -114,7 +138,7 @@ export const handleKiranaChat = async (req, res) => {
       [DATA REFERENSI]: ${documentContext}
 
       Jawab pertanyaan User dengan mendeteksi kata kunci yang sama pada DATA REFERENSI di atas.
-      Jika pada DATA REFERENSI terdapat rincian kategori, sebutkan semuanya secara lengkap dan jelas!
+      Jika pada DATA REFERENSI terdapat rincian kategori, sebutkan semuanya secara lengkap, jelas dan singkat!
     `;
 
     console.log("⏳ Meminta Ollama merakit jawaban cerdas...");
@@ -147,6 +171,7 @@ export const handleKiranaChat = async (req, res) => {
 
     let aiReply = response.message.content;
 
+    // SINKRONISASI TAMPILAN AKHIR JAWABAN
     const formattedSources =
       sourceList.length > 0 ? `Data from ID : ${sourceList.join(", ")}` : "";
 
@@ -172,6 +197,143 @@ export const handleKiranaChat = async (req, res) => {
       .json({ message: "Terjadi kesalahan pada sistem chatbot Kirana AI." });
   }
 };
+
+// export const handleKiranaChat = async (req, res) => {
+//   try {
+//     const { message, sessionId, userId } = req.body;
+
+//     console.log(
+//       `[Chat masuk] Sesi: ${sessionId}, User: ${userId}, Pesan: ${message}`,
+//     );
+
+//     if (!message) {
+//       return res.status(400).json({ message: "Pesan tidak boleh kosong." });
+//     }
+
+//     const activeSessionId = sessionId || "default-session-local";
+//     console.log(`\n💬 Chat Masuk [Sesi: ${activeSessionId}]: "${message}"`);
+
+//     const finalUserId = userId || 1;
+
+//     await saveChatMessage(activeSessionId, "user", message, finalUserId);
+
+//     const historyRows = await getChatHistoryBySession(activeSessionId, 5);
+//     const formattedHistory = historyRows
+//       .map(
+//         (chat) =>
+//           `${chat.sender === "user" ? "User" : "KiranaAI"}: ${chat.message}`,
+//       )
+//       .join("\n");
+
+//     console.log("⏳ Menyisir database regulasi dengan teknik Vector Search...");
+//     const contextChunks = await queryKnowledgeBase(message, 6);
+
+//     const documentContext = contextChunks
+//       .map((chunk, index) => `DATA REFERENSI #${index + 1}:\n${chunk.content}`)
+//       .join("\n\n-------------------------\n\n");
+
+//     console.log(
+//       `✅ Berhasil menemukan ${contextChunks.length} potongan regulasi.`,
+//     );
+
+//     const sourceList = [];
+
+//     for (const chunk of contextChunks.slice(0, 2)) {
+//       const filename = chunk.filename || "Dokumen_Internal";
+
+//       let sourceString = "";
+//       if (chunk.row_number) {
+//         sourceString = `${filename} (baris: ${chunk.row_number})`;
+//       } else if (chunk.page_number) {
+//         sourceString = `${filename} (hal: ${chunk.page_number})`;
+//       } else {
+//         sourceString = filename;
+//       }
+
+//       if (!sourceList.includes(sourceString)) {
+//         sourceList.push(sourceString);
+//       }
+//     }
+
+//     const strictSystemInstruction = `
+//       Kamu adalah Kirana AI. Kamu adalah asisten informasi yang sangat rapi.
+//       Setiap kali menjawab pertanyaan tentang lokasi, jadwal, atau prosedur, ikuti aturan format ini:
+
+//       - Gunakan Heading ### untuk kategori utama.
+//       - Gunakan Bullet Points (*) untuk poin-poin.
+//       - Gunakan Bold (**) untuk judul sub-poin.
+//       - Jangan menulis dalam paragraf panjang, gunakan indentasi (spasi) agar terlihat seperti struktur pohon (tree).
+//       - JANGAN menuliskan angka 1, 2, atau 3 di awal jawabanmu.
+//       - Gunakan spasi atau indentasi 2-4 spasi untuk setiap sub-poin agar terlihat bertingkat secara visual.
+
+//       [STRUKTUR HIERARKI YANG WAJIB DIIKUTI]:
+//       * **Kategori**
+//         * **Nama**
+//           * Detail A: ...
+//             - Detail A1: ...
+//               - Detail A1.1: ...
+
+//       [DATA REFERENSI]: ${documentContext}
+
+//       Jawab pertanyaan User dengan mendeteksi kata kunci yang sama pada DATA REFERENSI di atas.
+//       Jika pada DATA REFERENSI terdapat rincian kategori, sebutkan semuanya secara lengkap, jelas dan singkat!
+//     `;
+
+//     console.log("⏳ Meminta Ollama merakit jawaban cerdas...");
+
+//     const startTime = performance.now();
+
+//     const response = await ollama.chat({
+//       model: "qwen2.5:1.5b",
+//       messages: [
+//         {
+//           role: "system",
+//           content: strictSystemInstruction,
+//         },
+//         {
+//           role: "user",
+//           content: message,
+//         },
+//       ],
+//       options: {
+//         num_predict: 500,
+//         temperature: 0.2,
+//       },
+//     });
+
+//     const endTime = performance.now();
+//     const durationInSeconds = ((endTime - startTime) / 1000).toFixed(1);
+//     console.log(
+//       `✅ Ollama selesai merespons dalam ${durationInSeconds} seconds.`,
+//     );
+
+//     let aiReply = response.message.content;
+
+//     const formattedSources =
+//       sourceList.length > 0 ? `Data from ID : ${sourceList.join(", ")}` : "";
+
+//     if (formattedSources) {
+//       aiReply += `\n\n---\n ${formattedSources} | Time : ${durationInSeconds} seconds`;
+//     } else {
+//       aiReply += `\n\n---\n Time : ${durationInSeconds} seconds`;
+//     }
+
+//     await saveChatMessage(activeSessionId, "bot", aiReply, finalUserId);
+
+//     return res.status(200).json({
+//       reply: aiReply,
+//       sessionId: activeSessionId,
+//       sourceDocuments: contextChunks.map((c) => ({
+//         content: c.content.substring(0, 100) + "...",
+//       })),
+//     });
+//   } catch (error) {
+//     console.error("Error pada controller chat:", error);
+//     return res
+//       .status(500)
+//       .json({ message: "Terjadi kesalahan pada sistem chatbot Kirana AI." });
+//   }
+// };
 
 // =========================================================================
 // FUNGSI FEEDBACK (DIPERBARUI DENGAN PENCEGAHAN DUPLIKAT)
@@ -599,5 +761,78 @@ export const deleteChatSession = async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Internal server error." });
+  }
+};
+
+// ==========================================================================
+// 3. FUNGSI PENCARIAN UTAMA KNOWLEDGE BASE (UNTUK CHATBOT AI)
+// ==========================================================================
+export const queryKnowledgeBase = async (userQuery, limit = 5) => {
+  try {
+    const userVector = await getKiranaEmbedding(userQuery);
+
+    const dbResult = await pool.query(`
+      SELECT 
+        c.id, 
+        c.document_id,
+        c.content, 
+        c.embedding, 
+        c.page_number, 
+        c.row_number,
+        d.filename
+      FROM kb_document_chunks c
+      LEFT JOIN kb_documents d ON c.document_id = d.id
+      WHERE c.embedding IS NOT NULL
+    `);
+
+    const chunks = dbResult.rows;
+    const scoredChunks = [];
+    const keywords = userQuery
+      .toLowerCase()
+      .split(" ")
+      .filter((w) => w.length > 3);
+
+    for (const chunk of chunks) {
+      let chunkEmbedding = chunk.embedding;
+
+      if (typeof chunkEmbedding === "string") {
+        chunkEmbedding = chunkEmbedding
+          .replace(/{|}/g, "")
+          .split(",")
+          .map(Number);
+      }
+
+      if (
+        Array.isArray(chunkEmbedding) &&
+        chunkEmbedding.length === userVector.length
+      ) {
+        let score = cosineSimilarity(userVector, chunkEmbedding);
+
+        const lowerContent = chunk.content.toLowerCase();
+        let matchCount = 0;
+        for (const kw of keywords) {
+          if (lowerContent.includes(kw)) matchCount++;
+        }
+        if (matchCount > 0) {
+          score += matchCount * 0.05;
+        }
+
+        scoredChunks.push({
+          id: chunk.id,
+          document_id: chunk.document_id,
+          content: chunk.content,
+          score: score,
+          page_number: chunk.page_number,
+          row_number: chunk.row_number,
+          filename: chunk.filename,
+        });
+      }
+    }
+
+    scoredChunks.sort((a, b) => b.score - a.score);
+    return scoredChunks.slice(0, limit);
+  } catch (error) {
+    console.error("Error saat mencari di Knowledge Base:", error);
+    return [];
   }
 };

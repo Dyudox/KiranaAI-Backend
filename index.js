@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import pool from "./config/db.js";
 import authRouter from "./routes/authRoutes.js";
 // import kbRouter from "./routes/kbRoutes.js";
-import kbRoutes from "./routes/kbRoutes.js";
+import fileManagementRoutes from "./routes/fileManagementRoutes.js";
 import chatRoutes from "./routes/chatRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import roleRoutes from "./routes/roleRoutes.js";
@@ -29,7 +29,8 @@ app.use(express.json());
 
 // Pasang Router
 app.use("/api/auth", authRouter);
-app.use("/api", kbRoutes);
+// app.use("/api", kbRoutes);
+app.use("/api", fileManagementRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
