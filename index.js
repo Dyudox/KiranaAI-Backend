@@ -11,6 +11,8 @@ import userRoutes from "./routes/userRoutes.js";
 import roleRoutes from "./routes/roleRoutes.js";
 import routerRecording from "./routes/recordingRoutes.js";
 import dashboardRoutes from "./routes/dashboardRoutes.js";
+import suggestedQuestionRoutes from "./routes/suggestedQuestionRoutes.js";
+import aiConfigRouter from "./routes/aiConfigRoutes.js";
 
 dotenv.config();
 
@@ -35,6 +37,8 @@ app.use("/api/chat", chatRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/roles", roleRoutes);
 app.use("/api", dashboardRoutes);
+app.use("/api", suggestedQuestionRoutes);
+app.use("/api", aiConfigRouter);
 // app.use("/uploads", express.static("uploads"));
 app.use(routerRecording);
 // Main Route

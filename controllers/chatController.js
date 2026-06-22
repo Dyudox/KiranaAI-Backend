@@ -37,7 +37,6 @@ const saveChatMessage = async (sessionId, sender, message, userId) => {
 // =========================================================================
 // CONTROLLER UTAMA
 // =========================================================================
-
 export const handleKiranaChat = async (req, res) => {
   try {
     const { message, sessionId, userId } = req.body;
@@ -77,14 +76,13 @@ export const handleKiranaChat = async (req, res) => {
     );
 
     // =========================================================================
-    // 🌟 PERBAIKAN: EKSTRAKSI SEMUA SUMBER DOKUMEN (TERMASUK PDF Halaman)
+    // EKSTRAKSI SEMUA SUMBER DOKUMEN (TERMASUK PDF Halaman)
     // =========================================================================
     const sourceMap = {};
 
     for (const chunk of contextChunks) {
       const filename = chunk.filename || "Dokumen_Internal";
 
-      // Inisialisasi object untuk file baru
       if (!sourceMap[filename]) {
         sourceMap[filename] = {
           pages: [],
@@ -92,7 +90,6 @@ export const handleKiranaChat = async (req, res) => {
         };
       }
 
-      // Kelompokkan halaman (PDF) atau baris (Excel)
       if (chunk.page_number) {
         sourceMap[filename].pages.push(chunk.page_number);
       } else if (chunk.row_number) {
@@ -100,11 +97,8 @@ export const handleKiranaChat = async (req, res) => {
       }
     }
 
-    // Ubah data object di atas menjadi array string yang rapi
     const sourceList = Object.keys(sourceMap).map((filename) => {
       const data = sourceMap[filename];
-
-      // Ambil nilai unik dan urutkan dari angka terkecil ke terbesar
       const uniquePages = [...new Set(data.pages)].sort((a, b) => a - b);
       const uniqueRows = [...new Set(data.rows)].sort((a, b) => a - b);
 
@@ -117,10 +111,46 @@ export const handleKiranaChat = async (req, res) => {
       }
     });
 
+    // =========================================================================
+    // 🌟 INTEGRASI DINAMIS: DI SINI KITA AMBIL DARI DATABASE NEW TABLE
+    // =========================================================================
+
+    // 1. Ambil System Prompt Utama dari `ai_config`
+    const configRes = await pool.query(
+      `SELECT config_value FROM public.ai_config WHERE config_key = 'system_prompt' LIMIT 1;`,
+    );
+
+    // Gunakan prompt bawaan kamu sebagai cadangan (fallback) jika database kosong
+    const baseSystemPrompt =
+      configRes.rows[0]?.config_value ||
+      `Kamu adalah Kirana AI. Kamu adalah asisten informasi yang sangat rapi.`;
+
+    // 2. Ambil catatan evaluasi (Feedback Buruk) untuk dijadikan "pelajaran" buat AI
+    // Mengambil 5 masukan/koreksi negatif terbaru dari pengguna yang ada alasannya
+    const feedbackRes = await pool.query(
+      `SELECT reason FROM public.chat_feedback 
+        WHERE rating = 'dislike' 
+          AND reason IS NOT NULL 
+          AND reason != ''
+          AND LOWER(reason) NOT LIKE '%ok%' -- 🎯 Menyaring teks testing positif/tidak relevan
+          AND LOWER(reason) NOT LIKE '%test%'
+        ORDER BY id DESC LIMIT 5;`,
+    );
+
+    let feedbackInstruction = "";
+    if (feedbackRes.rows.length > 0) {
+      feedbackInstruction = `
+        \n[PENTING - ATURAN KOREKSI EVALUASI MASA LALU]:
+        Beberapa pengguna sebelumnya memberikan feedback negatif. Patuhi aturan tambahan ini untuk menjawab keluhan mereka:
+        ${feedbackRes.rows.map((f, i) => `- Evaluasi & perbaiki masalah ini: ${f.reason}`).join("\n")}
+        `;
+    }
+
+    // 3. Gabungkan instruksi format layout yang kaku dengan prompt dinamis dari DB
     const strictSystemInstruction = `
-      Kamu adalah Kirana AI. Kamu adalah asisten informasi yang sangat rapi.
-      Setiap kali menjawab pertanyaan tentang lokasi, jadwal, atau prosedur, ikuti aturan format ini:
+      ${baseSystemPrompt}
       
+      Setiap kali menjawab pertanyaan tentang lokasi, jadwal, atau prosedur, ikuti aturan format ini:
       - Gunakan Heading ### untuk kategori utama.
       - Gunakan Bullet Points (*) untuk poin-poin.
       - Gunakan Bold (**) untuk judul sub-poin.
@@ -128,18 +158,27 @@ export const handleKiranaChat = async (req, res) => {
       - JANGAN menuliskan angka 1, 2, atau 3 di awal jawabanmu.
       - Gunakan spasi atau indentasi 2-4 spasi untuk setiap sub-poin agar terlihat bertingkat secara visual.
 
-      [STRUKTUR HIERARKI YANG WAJIB DIIKUTI]:
-      * **Kategori**
-        * **Nama**
-          * Detail A: ...
-            - Detail A1: ...
-              - Detail A1.1: ...
+      // [RIWAYAT PERCAKAPAN]
+      // Berikut adalah percakapan sebelumnya antara kamu (KiranaAI) dan User. Gunakan ini untuk memahami konteks jika User bertanya menggunakan kata tunjuk atau menanyakan ulang hal sebelumnya:
+      // ${formattedHistory || "Belum ada obrolan sebelumnya."}
+      
+      // [STRUKTUR HIERARKI YANG WAJIB DIIKUTI]:
+      // * **Kategori**
+      //   * **Nama**
+      //     * Detail A: ...
+      //       - Detail A1: ...
+      //         - Detail A1.1: ...
 
-      [DATA REFERENSI]: ${documentContext}
+      [DATA REFERENSI]: 
+      ${documentContext}
+
+      ${feedbackInstruction}
 
       Jawab pertanyaan User dengan mendeteksi kata kunci yang sama pada DATA REFERENSI di atas.
       Jika pada DATA REFERENSI terdapat rincian kategori, sebutkan semuanya secara lengkap, jelas dan singkat!
     `;
+
+    // =========================================================================
 
     console.log("⏳ Meminta Ollama merakit jawaban cerdas...");
 
@@ -197,6 +236,165 @@ export const handleKiranaChat = async (req, res) => {
       .json({ message: "Terjadi kesalahan pada sistem chatbot Kirana AI." });
   }
 };
+// export const handleKiranaChat = async (req, res) => {
+//   try {
+//     const { message, sessionId, userId } = req.body;
+
+//     console.log(
+//       `[Chat masuk] Sesi: ${sessionId}, User: ${userId}, Pesan: ${message}`,
+//     );
+
+//     if (!message) {
+//       return res.status(400).json({ message: "Pesan tidak boleh kosong." });
+//     }
+
+//     const activeSessionId = sessionId || "default-session-local";
+//     console.log(`\n💬 Chat Masuk [Sesi: ${activeSessionId}]: "${message}"`);
+
+//     const finalUserId = userId || 1;
+
+//     await saveChatMessage(activeSessionId, "user", message, finalUserId);
+
+//     const historyRows = await getChatHistoryBySession(activeSessionId, 5);
+//     const formattedHistory = historyRows
+//       .map(
+//         (chat) =>
+//           `${chat.sender === "user" ? "User" : "KiranaAI"}: ${chat.message}`,
+//       )
+//       .join("\n");
+
+//     console.log("⏳ Menyisir database regulasi dengan teknik Vector Search...");
+//     const contextChunks = await queryKnowledgeBase(message, 6);
+
+//     const documentContext = contextChunks
+//       .map((chunk, index) => `DATA REFERENSI #${index + 1}:\n${chunk.content}`)
+//       .join("\n\n-------------------------\n\n");
+
+//     console.log(
+//       `✅ Berhasil menemukan ${contextChunks.length} potongan regulasi.`,
+//     );
+
+//     // =========================================================================
+//     // 🌟 PERBAIKAN: EKSTRAKSI SEMUA SUMBER DOKUMEN (TERMASUK PDF Halaman)
+//     // =========================================================================
+//     const sourceMap = {};
+
+//     for (const chunk of contextChunks) {
+//       const filename = chunk.filename || "Dokumen_Internal";
+
+//       // Inisialisasi object untuk file baru
+//       if (!sourceMap[filename]) {
+//         sourceMap[filename] = {
+//           pages: [],
+//           rows: [],
+//         };
+//       }
+
+//       // Kelompokkan halaman (PDF) atau baris (Excel)
+//       if (chunk.page_number) {
+//         sourceMap[filename].pages.push(chunk.page_number);
+//       } else if (chunk.row_number) {
+//         sourceMap[filename].rows.push(chunk.row_number);
+//       }
+//     }
+
+//     // Ubah data object di atas menjadi array string yang rapi
+//     const sourceList = Object.keys(sourceMap).map((filename) => {
+//       const data = sourceMap[filename];
+
+//       // Ambil nilai unik dan urutkan dari angka terkecil ke terbesar
+//       const uniquePages = [...new Set(data.pages)].sort((a, b) => a - b);
+//       const uniqueRows = [...new Set(data.rows)].sort((a, b) => a - b);
+
+//       if (uniquePages.length > 0) {
+//         return `${filename} [hal: ${uniquePages.join(", ")}]`;
+//       } else if (uniqueRows.length > 0) {
+//         return `${filename} [baris: ${uniqueRows.join(", ")}]`;
+//       } else {
+//         return filename;
+//       }
+//     });
+
+//     const strictSystemInstruction = `
+//       Kamu adalah Kirana AI. Kamu adalah asisten informasi yang sangat rapi.
+//       Setiap kali menjawab pertanyaan tentang lokasi, jadwal, atau prosedur, ikuti aturan format ini:
+
+//       - Gunakan Heading ### untuk kategori utama.
+//       - Gunakan Bullet Points (*) untuk poin-poin.
+//       - Gunakan Bold (**) untuk judul sub-poin.
+//       - Jangan menulis dalam paragraf panjang, gunakan indentasi (spasi) agar terlihat seperti struktur pohon (tree).
+//       - JANGAN menuliskan angka 1, 2, atau 3 di awal jawabanmu.
+//       - Gunakan spasi atau indentasi 2-4 spasi untuk setiap sub-poin agar terlihat bertingkat secara visual.
+
+//       [STRUKTUR HIERARKI YANG WAJIB DIIKUTI]:
+//       * **Kategori**
+//         * **Nama**
+//           * Detail A: ...
+//             - Detail A1: ...
+//               - Detail A1.1: ...
+
+//       [DATA REFERENSI]: ${documentContext}
+
+//       Jawab pertanyaan User dengan mendeteksi kata kunci yang sama pada DATA REFERENSI di atas.
+//       Jika pada DATA REFERENSI terdapat rincian kategori, sebutkan semuanya secara lengkap, jelas dan singkat!
+//     `;
+
+//     console.log("⏳ Meminta Ollama merakit jawaban cerdas...");
+
+//     const startTime = performance.now();
+
+//     const response = await ollama.chat({
+//       model: "qwen2.5:1.5b",
+//       messages: [
+//         {
+//           role: "system",
+//           content: strictSystemInstruction,
+//         },
+//         {
+//           role: "user",
+//           content: message,
+//         },
+//       ],
+//       options: {
+//         num_predict: 500,
+//         temperature: 0.2,
+//       },
+//     });
+
+//     const endTime = performance.now();
+//     const durationInSeconds = ((endTime - startTime) / 1000).toFixed(1);
+//     console.log(
+//       `✅ Ollama selesai merespons dalam ${durationInSeconds} seconds.`,
+//     );
+
+//     let aiReply = response.message.content;
+
+//     // SINKRONISASI TAMPILAN AKHIR JAWABAN
+//     const formattedSources =
+//       sourceList.length > 0 ? `Data from ID : ${sourceList.join(", ")}` : "";
+
+//     if (formattedSources) {
+//       aiReply += `\n\n---\n ${formattedSources} | Time : ${durationInSeconds} seconds`;
+//     } else {
+//       aiReply += `\n\n---\n Time : ${durationInSeconds} seconds`;
+//     }
+
+//     await saveChatMessage(activeSessionId, "bot", aiReply, finalUserId);
+
+//     return res.status(200).json({
+//       reply: aiReply,
+//       sessionId: activeSessionId,
+//       sourceDocuments: contextChunks.map((c) => ({
+//         content: c.content.substring(0, 100) + "...",
+//       })),
+//     });
+//   } catch (error) {
+//     console.error("Error pada controller chat:", error);
+//     return res
+//       .status(500)
+//       .json({ message: "Terjadi kesalahan pada sistem chatbot Kirana AI." });
+//   }
+// };
 
 // export const handleKiranaChat = async (req, res) => {
 //   try {
